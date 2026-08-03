@@ -367,8 +367,6 @@ Scoped out deliberately; each is tracked separately.
 - **Non-blocking `run()`.** `run()` blocks until the fragment's pipelines finish, and the query
   lifecycle slot in `SiriusContext` is global single-flight, so fragments cannot overlap.
   Per-query lifecycle isolation is the blocker; everything here is already written for it.
-- **The source of the expected sender population.** The sender-aware API and its dedup ship now;
-  where N comes from (StarRocks fragment metadata, surfaced by translation) is wrapper-side work.
 - **Bit-exact StarRocks partition hashing** — FNV/XXH3 for ordinary `HASH_PARTITIONED`,
   CRC32/bucket-id for the bucket-shuffle regime. For a local, single-node cut any consistent hash
   co-locates equal keys, so Sirius's own hash is correct here; cross-node correctness needs the
