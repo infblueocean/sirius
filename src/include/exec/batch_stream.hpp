@@ -51,8 +51,21 @@ using sender_id_t = std::uint32_t;
 /// is touched only under that lock — except `try_pull()`'s pop, so wait-then-pop is not atomic
 /// and a blocking consumer loop must re-check after `wait()`.
 ///
-/// Error semantics are P1–P4 (see `fail`), which amount to one rule: an errored stream never
-/// reports a clean end. It ends by rethrow out of `try_pull()`.
+/// Error semantics are P1–P4 (see `fail`). Stream-level guarantees S1–S5 (cited by call sites
+/// and tests) collect the observable contracts of each mechanism:
+/// - **S1 — admission ordering.** `push()` puts the batch in the repository before firing
+///   `on_data`, and returns false once the stream is terminal. A consumer that saw EOS can never
+///   be raced by a batch that was not yet visible when `on_data` fired.
+/// - **S2 — poison dominates.** `fail()` fires `on_data` (P4) so a consumer parked on `WAITING`
+///   wakes to collect the rethrow. The error is immediate (P1), first-wins (P2), and ends the
+///   stream at once (P3) — a starved source would otherwise never discover a producer failure.
+/// - **S3 — errored is never clean.** A stream with a pending error never returns
+///   `END_OF_STREAM` or `drained()`. The only exit is the rethrow from `try_pull()`, never the
+///   quiet success that would let a failed query finish as if it had worked.
+/// - **S4 — rethrow beats pop.** `try_pull()` checks the pending error before popping; batches
+///   queued behind a failure are never handed to the consumer.
+/// - **S5 — wait-then-pop is not atomic.** `wait()` and the following `try_pull()` are two
+///   separate critical sections; a blocking consumer loop must re-check after waking.
 class batch_stream {
  public:
   /// What a consumer should do right now.

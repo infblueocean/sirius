@@ -68,14 +68,15 @@ spill-visible to the downgrade executor when the caller registered that reposito
 manager) bound to the stream state (sender-aware end-of-stream, the availability classification,
 the `on_data` notification, and the producer-error plane).
 
-Key design invariants:
+Key design invariants (S1–S5 are the named stream contracts defined in `exec/batch_stream.hpp`):
 - Batches cross natively, in their current tier — no Arrow, no forced GPU upgrade.
 - EOS is **sender-aware**: `close_input(sender)` is idempotent per sender, and the stream ends
   only once every *expected* sender has closed. An unexpected sender id is a defined error.
-- A producer failure (`fail_input(error)`) poisons the stream: it classifies as
-  `HAS_DATA`, is rethrown to the puller, and the stream never reports a clean end.
-- Push admission and close share the stream's one lock, so nothing is admitted after EOS and every
-  batch is in the repository before `on_data` announces it.
+- **S1** — every batch lands in the repository before `on_data` announces it; `push()` returns
+  false once the stream is terminal, so no batch can arrive after a consumer has seen EOS.
+- **S2–S3** — a producer failure (`fail_input(error)`) fires `on_data` so a parked consumer
+  wakes to collect the rethrow; the stream never reports `END_OF_STREAM` or `drained()` while an
+  error is pending (the only exit is the rethrow).
 - `execute()` is a pure pass-through (COLUMN_DATA_SCAN shape — no GPU work).
 - `no_history_peak_memory_estimate()` returns `stats.bytes` (no extra allocation).
 
