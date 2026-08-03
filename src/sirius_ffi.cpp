@@ -60,8 +60,9 @@ struct Context::Impl {
   duckdb::shared_ptr<duckdb::SiriusContext> context;
   duckdb::unique_ptr<duckdb::DuckDB> db;
   duckdb::unique_ptr<duckdb::Connection> conn;
-  //! Input streams declared for the fragment currently being planned. Held here as well as on the
-  //! connection so a fragment can populate it without re-resolving it out of registered_state.
+  //! Input streams declared for the fragment currently being planned. Dual ownership: also
+  //! inserted into registered_state (where the bind and the plan generator look it up). Held here
+  //! so the catalog outlives any registered_state reset and the `Context` can clear it directly.
   duckdb::shared_ptr<sirius::exec::stream_bind_catalog> stream_catalog;
 
   void bring_up(sirius::sirius_config& config)
