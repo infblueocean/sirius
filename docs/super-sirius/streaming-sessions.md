@@ -20,7 +20,7 @@ So each streaming operator owns two things:
 | Concern | Owned by |
 |---|---|
 | The queue of batches | `cucascade::shared_data_repository` |
-| End-of-stream, availability, waking | `exec::stream_lifecycle` |
+| End-of-stream, availability, waking | `exec::batch_stream` |
 
 Producers push into the repository and consumers pull from it, directly. There is **no
 bounded channel and no channel-level backpressure** — see [Why no backpressure](#why-no-backpressure).
@@ -277,13 +277,47 @@ that the source resolved against a repository. `exchange_channel` conflated a **
 | `on_pop` (backpressure resume) | **removed** |
 | item / byte capacity bounds | **removed** |
 
+## `exec::streaming_fragment` — plan builder + blocking runner
+
+**Files:** `src/include/exec/streaming_fragment.hpp`, `src/exec/streaming_fragment.cpp`
+
+Owns a complete fragment life cycle: declares inputs, builds the plan, constructs the sink, runs,
+and keeps the output pullable after `run()` returns.
+
+```
+fragment_spec spec = { plan_source, inputs, outputs, partitioning };
+streaming_fragment frag(context, spec);
+frag.build(query_id);   // declare → plan → create operators → register with session
+// push batches into frag.session() here if this fragment has inputs
+frag.run();             // blocks until all pipelines finish
+// pull from frag.session() until drained
+```
+
+Two lifetime decisions are load-bearing:
+
+**Repositories outlive the engine.** The fragment creates every repository before planning and
+registers none of them with `data_repository_manager_`. The query window's mandatory cleanup
+(`StandaloneQueryScope::finish()`) therefore cannot touch them. A sender's output stays in its
+repository and is still there when the receiver runs — which is what makes sequential streaming
+work without copying.
+
+**One query window, shared.** `run()` reuses the caller's `StandaloneQueryScope` rather than
+opening its own. A second scope resets the task creator and scan manager that `build()` populated;
+the fragment would then run zero tasks and return silently empty. The caller brackets `build()`
+and `run()` in one window (as `Context::execute_substrait` does for ordinary queries).
+
+**`stream_bind_catalog` bridges bind time and plan time.** DuckDB's table-function bind runs
+long before physical planning. The catalog is registered as a `ClientContextState` so
+`sirius_stream_source(id)` can resolve a schema at bind time; the physical plan generator
+re-reads the catalog at plan time to build each `STREAMING_SOURCE`.
+
 ## Not here yet
 
 Scoped out deliberately; each is tracked separately.
 
-- **Session as plan builder / scheduler launcher, and the cxx-FFI boundary** — building the
-  operators from a fragment plan, non-blocking submission to `task_scheduler`, teardown with
-  tasks in flight, exceptions → cxx `Result`. This session wraps already-instantiated operators.
+- **Non-blocking execution and task teardown.** `streaming_fragment::run()` blocks until all
+  pipelines finish (`engine->execute()` is synchronous). Non-blocking submission to
+  `task_scheduler` and safe teardown with tasks in flight come later.
 - **The source of the expected sender population.** The sender-aware API and its dedup ship now;
   where N comes from (StarRocks fragment metadata, surfaced by translation) is later work.
 - **Bit-exact StarRocks partition hashing** — FNV/XXH3 for ordinary `HASH_PARTITIONED`,
@@ -306,6 +340,9 @@ Scoped out deliberately; each is tracked separately.
 | `test/cpp/operator/test_physical_streaming_source.cpp` | `[streaming_source]` |
 | `test/cpp/operator/test_physical_streaming_sink.cpp` | `[streaming_sink]` |
 | `test/cpp/exec/test_stream_session.cpp` | `[stream_session]` |
+| `test/cpp/exec/test_stream_bind_catalog.cpp` | `[stream_bind_catalog]` |
+| `test/cpp/exec/test_streaming_fragment.cpp` | `[streaming_fragment]` |
 
 A `recording_task_creator` stands in for the scheduler, so the live re-arm and the `on_data`
-hook path are proven without a live executor.
+hook path are proven without a live executor. `test_streaming_fragment.cpp` requires a GPU and
+a real DuckDB integration database (`[integration]` tag).
