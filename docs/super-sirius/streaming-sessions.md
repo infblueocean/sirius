@@ -283,6 +283,12 @@ one scope. A lifecycle opened between them resets the task creator and scan mana
 populated, so the fragment runs zero tasks and returns an empty output with no error. `run()`
 blocks until the fragment's pipelines finish.
 
+`sirius::ffi::Fragment` (`src/include/sirius_ffi.hpp`, `src/sirius_ffi.cpp`) is the cxx-FFI
+wrapper over this substrate: a Rust caller declares inputs and outputs, builds a Substrait plan
+against them (each input read through a `sirius_stream_<id>` view), relays each sender in, and
+runs, with engine exceptions crossing the bridge as `Result`. No batch type crosses cxx —
+`relay_from` moves batches entirely inside C++, and Arrow appears only at a result fragment.
+
 ## Worked example: distributed GROUP BY
 
 The flagship case composes entirely from the pieces above — no new operator, no new mechanism.
@@ -358,8 +364,6 @@ that the source resolved against a repository. `exchange_channel` conflated a **
 
 Scoped out deliberately; each is tracked separately.
 
-- **The cxx-FFI boundary.** Declaring, building, and running a fragment from Rust, with engine
-  exceptions surfacing as `Result`. `streaming_fragment` is the C++ substrate it wraps.
 - **Non-blocking `run()`.** `run()` blocks until the fragment's pipelines finish, and the query
   lifecycle slot in `SiriusContext` is global single-flight, so fragments cannot overlap.
   Per-query lifecycle isolation is the blocker; everything here is already written for it.
