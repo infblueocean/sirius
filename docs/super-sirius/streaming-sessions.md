@@ -2,7 +2,7 @@
 
 How data enters and leaves a Sirius plan fragment when the fragment is one hop of a larger,
 distributed query. Four pieces: a **streaming source** (`STREAMING_SOURCE`), a **streaming
-sink** (`STREAMING_SINK`), the `exec::stream_lifecycle` helper both are built on, and the
+sink** (`STREAMING_SINK`), the `exec::batch_stream` primitive both are built on, and the
 `exec::stream_session` router that addresses them by stream id.
 
 Sirius itself stays fragment-blind. It never learns that it is distributed, which compute node a
@@ -30,34 +30,37 @@ currently sit. Nothing is materialized to Arrow on the way in or out, so a queue
 spillable (GPU → host → disk) right up until it is pulled, and `pull()` hands it back in its
 current tier without forcing an upgrade.
 
-## `exec::stream_lifecycle`
+## `exec::batch_stream`
 
-**Files:** `src/include/exec/stream_lifecycle.hpp`, `src/exec/stream_lifecycle.cpp`
+**Files:** `src/include/exec/batch_stream.hpp`, `src/exec/batch_stream.cpp`
 
-Holds no repository and no batches. `classify()` and `drained()` take repository emptiness as an
-argument, so the repository lock and the lifecycle lock are never held together and cannot
-invert. It is non-copyable and non-movable (it owns a mutex and a condition variable), so an
-operator holds it as an in-place member.
+One direction of batch flow: N declared senders push `data_batch`es into one
+`shared_data_repository`; consumers pull, poll, or block. The repository is the queue;
+`batch_stream` owns everything the repository lacks — who is still producing, whether "nothing
+right now" means *wait* or *over*, how a starved consumer gets woken, and how a producer failure
+reaches the consumer.
 
 ```cpp
-class stream_lifecycle {
+class batch_stream {
  public:
   enum class availability { HAS_DATA, WAITING, END_OF_STREAM };
 
-  explicit stream_lifecycle(std::set<sender_id_t> expected);
+  batch_stream(shared_ptr<shared_data_repository> repo, set<sender_id_t> expected);
 
   // Producer
-  bool admit(const std::function<void()>& insert);   // false once terminal
-  void mark_sender_done(sender_id_t sender);         // idempotent per sender
+  [[nodiscard]] bool push(shared_ptr<data_batch>);   // S1: in repo before on_data fires; false once terminal
+  void close(sender_id_t);       // idempotent per sender; set-based fan-in
+  void fail(exception_ptr);      // P1–P4: immediate, first-wins, fail-fast, announces like data
 
   // Consumer
-  availability classify(bool repo_empty) const;
-  bool drained(bool repo_empty) const;
-  void wait(const std::function<bool()>& repo_empty);
+  shared_ptr<data_batch> try_pull();  // S4: rethrows pending error before pop
+  availability classify() const;      // S3: errored stream is never END_OF_STREAM
+  bool drained() const;               // clean end only (S3)
+  void wait();                        // S5: not atomic with try_pull — loop must re-check
 
-  // Re-arm / completion
-  bool arm_waker(std::function<void()> waker, const std::function<bool()>& arm_if);
-  void set_on_end_of_stream(std::function<void()> hook);
+  // Hooks (single slot; fire after unlocking; late registration on an ended stream fires immediately)
+  void set_on_data(function<void()>);           // persistent — fires on every push and on fail()
+  void set_on_end_of_stream(function<void()>);
 };
 ```
 
@@ -65,44 +68,45 @@ Three things are load-bearing.
 
 **End-of-stream is a set, not a counter.** A fan-in stream — one root source fed by N remote
 leaves — is over only when *all N* senders have closed. A counter cannot tell "both senders
-closed once" from "one sender closed twice", so a bare `mark_done()` cannot be both idempotent
-and fan-in-correct. `mark_sender_done` inserts into a set of closed sender ids and compares it
-against the expected set. A repeat close is a genuine no-op; an id outside the expected set is a
-defined error, not a silent count.
+closed once" from "one sender closed twice". `close(sender_id)` inserts into a set and compares
+against the expected set; a repeat close is a no-op, an unexpected id is a defined error.
 
-**Push admission and close share one lock.** `admit()` runs the caller's repository insert
-*under* the lifecycle lock, so a close cannot interleave: no batch is ever admitted after
-end-of-stream, and every batch is registered in the repository before anything can observe its
-wake. Callbacks fire after unlocking, so a waker may re-enter the scheduler safely.
+**Push, close, and every emptiness check share one lock (S1).** `push()` inserts the batch
+*under* the stream's lock and fires `on_data` after releasing it, so a close cannot interleave:
+no batch is ever admitted after end-of-stream, and every batch is in the repository before the
+wake that announces it. Callbacks fire after unlocking, so a hook may re-enter the scheduler.
 
-**`classify()` separates "not yet" from "never".** Queued data outranks terminal: EOS is never
-reported while a batch the stream already accepted is still pullable.
+**`classify()` separates "not yet" from "never" (S3).** Queued data outranks terminal: EOS is
+never reported while a batch the stream already accepted is still pullable. A pending error reads
+as `HAS_DATA` even over an empty queue — the only way out is the rethrow from `try_pull()`, not
+a clean finish that would let a failed query succeed silently.
 
-| terminal? | repo empty? | `classify()` |
-|---|---|---|
-| no | no | `HAS_DATA` |
-| no | yes | `WAITING` |
-| yes | no | `HAS_DATA` |
-| yes | yes | `END_OF_STREAM` |
+| `_terminal` | `_error` | repo empty? | `classify()` |
+|---|---|---|---|
+| no | no | no | `HAS_DATA` |
+| no | no | yes | `WAITING` |
+| yes | no | no | `HAS_DATA` |
+| yes | no | yes | `END_OF_STREAM` |
+| either | yes | either | `HAS_DATA` (P4) |
 
-`wait()` is the blocking form (block until `classify() != WAITING`) for the external consumer
-thread. Engine workers never call it.
+`wait()` blocks until `classify() != WAITING`. Engine workers never call it (S5).
 
 ## `STREAMING_SOURCE` — the input boundary
 
 **Files:** `src/include/op/sirius_physical_streaming_source.hpp`, `src/op/sirius_physical_streaming_source.cpp`
 
-Owns an input repository plus a lifecycle constructed with the fragment's expected sender set.
-Producers call `push(batch)` and `close_input(sender_id)`; the engine sees an ordinary source.
+Wraps one `exec::batch_stream` constructed with the fragment's expected sender set. Producers call
+`push(batch)` and `close_input(sender_id)`; the engine sees an ordinary source.
 
-| Lifecycle state | `get_next_task_hint()` |
+| Stream state | `get_next_task_hint()` |
 |---|---|
 | `HAS_DATA` | `READY{this}` |
-| `WAITING` | `WAITING{nullptr}`, **and arm the one-shot waker** |
+| `WAITING` | `WAITING{nullptr}` |
 | `END_OF_STREAM` | `std::nullopt` |
 
-`all_ports_empty()` is `lifecycle.drained(repo.all_empty())`; `get_next_task_input_data()` is
-`repo.pop_next_data_batch()` (one batch per task, zero-copy); `execute()` is a pass-through.
+`all_ports_empty()` is `stream.drained()` (clean end only — an errored stream stays `false`);
+`get_next_task_input_data()` calls `stream.try_pull()` (one batch per task, zero-copy, rethrows
+on pending error); `execute()` is a pass-through.
 
 ### The live re-arm
 
@@ -111,44 +115,37 @@ and the only built-in re-nomination is task completion — so a stream-fed sourc
 (open and empty) has **no completing task to wake it**. Without a live re-arm the streaming
 source would only ever run when some other task happened to be in flight.
 
-The mechanism:
+`batch_stream::set_on_data` is a **persistent** (not one-shot) hook wired in `set_pipeline()`.
+Every successful `push()` fires it, calling `task_creator::schedule(head)` — which only enqueues
+onto the thread-safe creation queue, so it is safe to fire from any thread (a GPU worker
+mid-`sink()`, the wrapper's network thread). The callback weak-captures the pipeline, never
+`this`, and resolves the head through `pipeline->get_source()`. A late schedule after
+`task_scheduler::drain_after_error()` is dropped by the interrupted-queue path.
 
-1. When the hint would be `WAITING`, the source arms a one-shot waker via `arm_waker`, whose
-   `arm_if` predicate re-checks repository emptiness **under the lifecycle lock**.
-2. `admit()` takes that same lock to insert the batch and to take the waker.
-
-Either the arm predicate sees the batch a concurrent push just landed (so the source re-classifies
-as `READY` instead of parking), or the push has not happened yet and will fire the waker we just
-installed. No wake is lost.
-
-The waker calls `task_creator::schedule(head)`, which only enqueues onto the thread-safe
-`_task_creation_queue` — it does not re-enter the operator or take pipeline locks, so it is safe
-to fire from a foreign thread (a GPU worker mid-`sink()`, or the wrapper's network thread). The
-callback weak-captures the pipeline, never `this`, and resolves the head through
-`pipeline->get_source()`, exactly as `notify_downstream_pipelines()` does. A late schedule after
-`task_scheduler::drain_after_error()` is dropped by the existing interrupted-queue path.
+Because the hook is persistent, a `push()` can never race past a lost notification: there is no
+waker to re-arm, so there is nothing to miss.
 
 Separately, `set_on_end_of_stream` → `pipeline->update_pipeline_status(false)` handles the case
-the re-arm cannot: a stream that closes with **no task in flight** (an empty stream, or a late
-close after the last task completed) has nothing to call `update_pipeline_status()` for it.
+the `on_data` hook cannot: a stream that closes with **no task in flight** (an empty stream, or a
+late close after the last task completed) has nothing to call `update_pipeline_status()` for it.
 `false` (rather than the default `true`) matters — it makes `notify_downstream_pipelines()` also
-schedule this pipeline's consumers, so a late-closed stream re-arms its downstream. Registering
-the hook after the stream already ended fires it immediately, so a raced close is not lost.
+schedule this pipeline's consumers. Registering the hook after the stream already ended fires it
+immediately, so a raced close is not lost.
 
 ## `STREAMING_SINK` — the output boundary
 
 **Files:** `src/include/op/sirius_physical_streaming_sink.hpp`, `src/op/sirius_physical_streaming_sink.cpp`
 
-A pipeline-terminal operator. `sink()` pushes each output batch into an output repository via
-`admit()`; `on_finalize_operator()` — the existing pipeline-finish hook — marks the pipeline
-(the stream's single expected sender) done, which is what makes `END_OF_STREAM` observable.
+A pipeline-terminal operator. `sink()` pushes each output batch into an output `batch_stream`
+via `push()`; `on_finalize_operator()` — the existing pipeline-finish hook — calls
+`stream.close(PIPELINE_SENDER)`, which is what makes `END_OF_STREAM` observable.
 Consumers use `pull(i)` / `wait(i)` / `drained(i)`, plus `availability(i)` for the non-blocking
 three-way classification.
 
 It is deliberately minimal: it overrides `sink()`, `on_finalize_operator()`, and the pass-through
 `no_history_peak_memory_estimate`, and nothing else. It carries no parking buffer and no
 closing state machine — those existed only to absorb a full bounded output channel, and there is
-no channel. Unlike the source it registers **no re-arm waker**: its consumer is an external
+no channel. Unlike the source it registers **no `on_data` hook**: its consumer is an external
 thread in `wait()`, not an engine task.
 
 ### Partition fan-out
@@ -172,11 +169,11 @@ struct partition_spec {
 A sink with more than one destination and no key columns is a construction error: silently
 routing every row to destination 0 would corrupt a downstream shuffle rather than fail loudly.
 
-Output stream id, partition index, and repository correspond **positionally**. One
-`stream_lifecycle` is shared across all N (the pipeline is one sender feeding all of them), so
-all partitions reach EOS together; but `drained(i)` and `wait(i)` AND that shared terminal flag
-with repository *i*'s own emptiness, so an undrained partition stays distinguishable from EOS
-independently of its siblings.
+Output stream id, partition index, and repository correspond **positionally**. Each partition *i*
+has its own `batch_stream(_outputs[i])`, so `drained(i)` and `wait(i)` are independent — a slow
+receiver stays distinguishable from EOS even after its siblings drain. All partitions share the
+same sender (`PIPELINE_SENDER = 0`), so `on_finalize_operator()` calling `close()` on every
+stream drives all N to EOS together.
 
 N and the partition spec come from the StarRocks exchange descriptor via translation. *Which*
 compute node each partition ships to is the wrapper's routing table — never the sink's. The sink
@@ -260,7 +257,7 @@ Supporting reasons:
 - **Longer term**, a *minimal* sink↔source signal for remote slowness or skew can coexist with
   this design. Nothing here forecloses it: the waker and future priority hooks are additive.
 
-`stream_lifecycle` never infers pressure from queue depth.
+`batch_stream` never infers pressure from queue depth.
 
 ## Migration from `exec::exchange_channel`
 
@@ -271,12 +268,12 @@ that the source resolved against a repository. `exchange_channel` conflated a **
 | `exchange_channel` concept | Replaced by |
 |---|---|
 | Queue of batch handles | `shared_data_repository` (owner of record; spillable) |
-| `close()` | `stream_lifecycle::mark_sender_done(sender_id)` — per-sender, idempotent |
-| `drained()` | `stream_lifecycle::drained(repo.all_empty())` |
-| open-empty vs closed | `stream_lifecycle::classify(repo.all_empty())` |
-| admission (was capacity) | `stream_lifecycle::admit()` — rejects a push once terminal |
-| `on_push` re-arm | `stream_lifecycle` waker → `task_creator::schedule(head)` |
-| `on_close` re-arm | `stream_lifecycle` end-of-stream hook → `update_pipeline_status(false)` |
+| `close()` | `batch_stream::close(sender_id)` — per-sender, idempotent, set-based |
+| `drained()` | `batch_stream::drained()` |
+| open-empty vs closed | `batch_stream::classify()` |
+| admission (was capacity) | `batch_stream::push()` — returns false once terminal (S1) |
+| `on_push` re-arm | `batch_stream::set_on_data` persistent hook → `task_creator::schedule(head)` |
+| `on_close` re-arm | `batch_stream::set_on_end_of_stream` hook → `update_pipeline_status(false)` |
 | `on_pop` (backpressure resume) | **removed** |
 | item / byte capacity bounds | **removed** |
 
@@ -305,10 +302,10 @@ Scoped out deliberately; each is tracked separately.
 
 | File | Catch2 tag |
 |---|---|
-| `test/cpp/exec/test_stream_lifecycle.cpp` | `[stream_lifecycle]` |
+| `test/cpp/exec/test_batch_stream.cpp` | `[batch_stream]` |
 | `test/cpp/operator/test_physical_streaming_source.cpp` | `[streaming_source]` |
 | `test/cpp/operator/test_physical_streaming_sink.cpp` | `[streaming_sink]` |
 | `test/cpp/exec/test_stream_session.cpp` | `[stream_session]` |
 
-A `recording_task_creator` stands in for the scheduler, so the live re-arm is proven without a
-live executor.
+A `recording_task_creator` stands in for the scheduler, so the live re-arm and the `on_data`
+hook path are proven without a live executor.
