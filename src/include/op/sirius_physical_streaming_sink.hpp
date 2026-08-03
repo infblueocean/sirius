@@ -149,11 +149,12 @@ class sirius_physical_streaming_sink : public sirius_physical_operator {
   /// @throws sirius::invalid_input_exception when `index` is out of range.
   void validate_index(std::size_t index) const;
 
-  /// One stream per destination. Output stream id, partition index and stream correspond
-  /// positionally; this PR constructs exactly one.
+  /// One stream per destination; positional with the caller's repository list.
   std::vector<std::shared_ptr<exec::batch_stream>> _outputs;
 
-  /// Empty `key_columns` means "not partitioned" — only valid when there is one destination.
+  /// Routing spec. Empty `key_columns` is valid only when `_outputs.size() == 1`, in which
+  /// case `sink()` short-circuits to a single native push without invoking the hash-partition
+  /// kernel at all — the spec is irrelevant, and there is nothing to route.
   partition_spec _spec;
 };
 
