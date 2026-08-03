@@ -142,7 +142,7 @@ TEST_CASE("streaming_sink SNK-3: finalize drives EOS only once the output is dra
 
   op->finalize_operator();
 
-  // Terminal, but the accepted batch is still pullable — invariant 2.
+  // Terminal, but the accepted batch is still pullable — data wins over EOS (classify()).
   REQUIRE(op->availability() == availability::HAS_DATA);
   REQUIRE_FALSE(op->drained());
 
@@ -389,10 +389,11 @@ TEST_CASE("streaming_sink SINK-ERR-2: errored stream never reports clean end", "
 }
 
 // ============================================================================
-// SINK-3: after finalize, each stream reports drained independently
+// SNK-11: after finalize, accepted data is still pullable before drained() is true
 // ============================================================================
 
-TEST_CASE("streaming_sink SINK-3: finalize closes all streams independently", "[streaming_sink]")
+TEST_CASE("streaming_sink SNK-11: finalize then pull reaches END_OF_STREAM cleanly",
+          "[streaming_sink]")
 {
   auto mem_mgr    = sirius::test::operator_utils::initialize_memory_manager();
   auto* gpu_space = mem_mgr->get_memory_space(Tier::GPU, 0);

@@ -116,7 +116,7 @@ class sirius_physical_streaming_sink : public sirius_physical_operator {
   void validate_index(std::size_t index) const;
 
   /// One stream per destination. Output stream id, partition index and stream correspond
-  /// positionally. #1321 constructs exactly one; #1322 grows the vector.
+  /// positionally; this PR constructs exactly one.
   std::vector<std::shared_ptr<exec::batch_stream>> _outputs;
 };
 
