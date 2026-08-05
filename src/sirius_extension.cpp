@@ -141,6 +141,18 @@ bool test_options_enabled() noexcept
   return value != nullptr && std::string_view{value} == "1";
 }
 
+bool regex_jit_setting_enabled() noexcept
+{
+#ifdef SIRIUS_ENABLE_LEGACY
+  // The legacy executor has historically exposed this implementation switch.
+  return true;
+#else
+  // Super Sirius chooses the specialized implementation internally. Keep the switch available
+  // only to explicitly opted-in differential tests.
+  return test_options_enabled();
+#endif
+}
+
 std::uint64_t count_narrowed_columns(
   sirius::pinned_column_storage_matrix const& column_storage) noexcept
 {
@@ -2232,13 +2244,14 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
       Value(""));
   }
 
-  // Add in config options for special JIT implementation for regex
-  config.AddExtensionOption(
-    "enable_regex_jit_impl",
-    "Whether to use special JIT implementation for particular regex evaluation",
-    LogicalType::BOOLEAN,
-    Value::BOOLEAN(Config::ENABLE_REGEX_JIT_IMPL),
-    SetEnableRegexJitImpl);
+  if (regex_jit_setting_enabled()) {
+    config.AddExtensionOption(
+      "enable_regex_jit_impl",
+      "INTERNAL: select the specialized implementation for supported regex evaluation",
+      LogicalType::BOOLEAN,
+      Value::BOOLEAN(Config::ENABLE_REGEX_JIT_IMPL),
+      SetEnableRegexJitImpl);
+  }
 
 #ifdef SIRIUS_ENABLE_LEGACY
   // Add in config options for modified pipeline
