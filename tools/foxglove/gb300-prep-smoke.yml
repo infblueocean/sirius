@@ -1,0 +1,76 @@
+---
+- name: Foxglove GB300 preparation smoke
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Read machine architecture
+      ansible.builtin.command:
+        argv: [uname, -m]
+      changed_when: false
+      register: foxglove_arch
+
+    - name: Read kernel version
+      ansible.builtin.command:
+        argv: [uname, -r]
+      changed_when: false
+      register: foxglove_kernel
+
+    - name: Read online CPU count
+      ansible.builtin.command:
+        argv: [nproc]
+      changed_when: false
+      register: foxglove_cpus
+
+    - name: Read host memory
+      ansible.builtin.command:
+        argv: [awk, '/MemTotal:/ {print $2 " kB"}', /proc/meminfo]
+      changed_when: false
+      register: foxglove_memory
+
+    - name: Read NVIDIA GPU identity
+      ansible.builtin.command:
+        argv:
+          - nvidia-smi
+          - --query-gpu=uuid,name,driver_version,memory.total
+          - --format=csv,noheader,nounits
+      changed_when: false
+      register: foxglove_gpu
+
+    - name: Read block-device inventory
+      ansible.builtin.command:
+        argv: [lsblk, -b, -dn, -o, NAME,SIZE,TYPE,ROTA]
+      changed_when: false
+      register: foxglove_block_devices
+
+    - name: Read build-tool versions
+      ansible.builtin.command:
+        argv: ["{{ item }}", --version]
+      changed_when: false
+      failed_when: false
+      loop:
+        - git
+        - cmake
+        - ninja
+        - python3
+        - pixi
+      register: foxglove_tools
+
+    - name: Require the requested single-superchip architecture
+      ansible.builtin.assert:
+        that:
+          - foxglove_arch.stdout == 'aarch64'
+          - foxglove_gpu.stdout_lines | length == 1
+          - "'GB300' in foxglove_gpu.stdout"
+        fail_msg: Colossus guest identity differs from the requested GB300 preparation target
+
+    - name: Emit secret-free Foxglove preparation identity
+      ansible.builtin.debug:
+        msg:
+          schema: foxglove-colossus-gb300-prep-smoke-v1
+          architecture: "{{ foxglove_arch.stdout }}"
+          kernel: "{{ foxglove_kernel.stdout }}"
+          online_cpus: "{{ foxglove_cpus.stdout }}"
+          host_memory: "{{ foxglove_memory.stdout }}"
+          gpu: "{{ foxglove_gpu.stdout }}"
+          block_devices: "{{ foxglove_block_devices.stdout_lines }}"
+          build_tools: "{{ foxglove_tools.results | map(attribute='stdout_lines') | list }}"
