@@ -144,12 +144,23 @@ void task_scheduler::schedule(std::unique_ptr<sirius::parallel::itask> task)
 
 void task_scheduler::start()
 {
+  std::vector<gpu_pipeline_executor*> started;
+  started.reserve(_gpu_executors.size());
   bool expected = false;
   if (!_running.compare_exchange_strong(expected, true)) { return; }
-  for (auto& [device_id, gpu_exec] : _gpu_executors) {
-    gpu_exec->start();
+  try {
+    for (auto& [device_id, gpu_exec] : _gpu_executors) {
+      gpu_exec->start();
+      started.push_back(gpu_exec.get());
+    }
+    _management_thread = std::thread(&task_scheduler::management_eventloop, this);
+  } catch (...) {
+    _running = false;
+    for (auto* gpu_exec : started) {
+      gpu_exec->stop();
+    }
+    throw;
   }
-  _management_thread = std::thread(&task_scheduler::management_eventloop, this);
 }
 
 void task_scheduler::stop()

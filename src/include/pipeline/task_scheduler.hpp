@@ -30,9 +30,9 @@
 
 #include <atomic>
 #include <future>
+#include <map>
 #include <memory>
 #include <optional>
-#include <unordered_map>
 
 namespace sirius::parallel {
 class downgrade_executor;
@@ -237,7 +237,7 @@ class task_scheduler {
   /// device_id -> GPU executor. std::map (not unordered_map) so iteration
   /// order is deterministic (ascending by device_id) — keeps preference-less
   /// task dispatch reproducible across runs.
-  std::unordered_map<int, std::unique_ptr<gpu_pipeline_executor>> _gpu_executors;
+  std::map<int, std::unique_ptr<gpu_pipeline_executor>> _gpu_executors;
   /// Deprecated as of pull-signal restoration: no-preference distribution now
   /// arises from which executor sends a device_ready signal first, not from a
   /// counter. Field retained for source compat with set_no_pref_rr_counter_for_testing.
