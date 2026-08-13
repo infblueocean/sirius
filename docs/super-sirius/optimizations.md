@@ -51,7 +51,10 @@ num_partitions = max(1, ceil(total_bytes / hash_partition_bytes))
 
 **Code path:** `src/op/sirius_physical_sort_sample.cpp` — `get_next_task_input_data()`, `get_next_task_hint()`, `execute()`; `src/planner/sirius_physical_plan_generator.cpp` — wiring `sort_sample_bytes` into SORT_SAMPLE
 
-**Config:** `sort_sample_bytes` (default: 512 MB), settable via YAML and the `sort_sample_bytes` SET option
+**Config:** the sort sample target shares the hardware/effective-capacity-derived
+operator batch default. The advanced YAML escape hatch
+`sirius.operator_params.sort_sample_bytes` remains available for a controlled
+sort benchmark. The direct DuckDB session override is test-only.
 
 ### Merge Pipeline Fusion (PR #1190)
 

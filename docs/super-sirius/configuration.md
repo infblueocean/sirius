@@ -562,11 +562,14 @@ SET enable_compressed_materialization = false;
 | `max_sort_partition_memory_fraction` | 0.33 | Auto sort-partition fraction when `max_sort_partition_bytes` is 0 |
 | `hash_partition_bytes` | Shared physical/effective GPU batch default | Hash partition target size; must be greater than zero |
 | `concat_batch_bytes` | Shared physical/effective GPU batch default | CONCAT output batch size |
-| `sort_sample_bytes` | Shared physical/effective GPU batch default | Bytes sampled before computing sort boundaries |
 | `max_build_hash_table_bytes` | 2× batch default | Max build-side hash table bytes |
 | `max_broadcast_join_size` | 256 MiB | Max build-side size eligible for a broadcast join |
 | `mark_join_build_switch_ratio` | 8.0 | STANDARD MARK join build-side switch ratio (0 disables) |
 | `enable_runtime_distinct_build_probe` | true | Runtime distinct-build test for `BUILD_PROBE` joins; promotes to the single-pass `cudf::distinct_hash_join` when the build keys prove distinct |
+
+The sort sample target uses the shared physical/effective GPU batch default.
+Its YAML operator parameter remains an expert benchmark envelope; the direct
+DuckDB session override is test-only.
 
 ### Dynamic Filters
 

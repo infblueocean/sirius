@@ -2230,6 +2230,11 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
       "TEST ONLY: force transparent GPU execution to fail at runtime with this message",
       LogicalType::VARCHAR,
       Value(""));
+    config.AddExtensionOption("sort_sample_bytes",
+                              "TEST ONLY: override the effective-capacity-derived sort sample",
+                              LogicalType::UBIGINT,
+                              Value::UBIGINT(operator_defaults.sort_sample_bytes),
+                              SetSortSampleBytes);
   }
 
   // Add in config options for special JIT implementation for regex
@@ -2310,12 +2315,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                             LogicalType::UBIGINT,
                             Value::UBIGINT(operator_defaults.concat_batch_bytes),
                             SetConcatBatchBytes);
-
-  config.AddExtensionOption("sort_sample_bytes",
-                            "Target bytes to sample before computing sort partition boundaries",
-                            LogicalType::UBIGINT,
-                            Value::UBIGINT(operator_defaults.sort_sample_bytes),
-                            SetSortSampleBytes);
 
   config.AddExtensionOption("max_build_hash_table_bytes",
                             "Maximum size a build-side table can be where it will create a "
