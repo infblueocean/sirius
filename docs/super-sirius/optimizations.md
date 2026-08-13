@@ -41,7 +41,10 @@ num_partitions = max(1, ceil(total_bytes / hash_partition_bytes))
 - `src/op/sirius_physical_sort_partition.cpp` — range partitioning
 - `src/op/sirius_physical_merge_sort.cpp` — multi-way merge
 
-**Config:** `max_sort_partition_bytes` (default: auto, 33% of GPU memory)
+**Config:** `max_sort_partition_bytes: 0` automatically derives the partition
+size from available GPU memory and `max_sort_partition_memory_fraction`
+(default: 0.33). The advanced YAML escape hatch remains available for a
+controlled sort benchmark. The direct DuckDB session override is test-only.
 
 ### SORT_SAMPLE Byte-Based Merge Sampling (PRs #876, #886)
 

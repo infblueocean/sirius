@@ -558,7 +558,6 @@ SET enable_compressed_materialization = false;
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `fuse_merge_pipelines` | true | Fuse eligible GROUP BY / TOP_N merges into their downstream pipeline instead of cutting a boundary (see [physical-plan-generation.md](physical-plan-generation.md) → Merge fusion) |
-| `max_sort_partition_bytes` | 0 (auto) | Max sort partition bytes |
 | `max_sort_partition_memory_fraction` | 0.33 | Auto sort-partition fraction when `max_sort_partition_bytes` is 0 |
 | `hash_partition_bytes` | Shared physical/effective GPU batch default | Hash partition target size; must be greater than zero |
 | `concat_batch_bytes` | Shared physical/effective GPU batch default | CONCAT output batch size |
@@ -570,6 +569,11 @@ SET enable_compressed_materialization = false;
 The sort sample target uses the shared physical/effective GPU batch default.
 Its YAML operator parameter remains an expert benchmark envelope; the direct
 DuckDB session override is test-only.
+
+Sort partition sizing is automatic by default: `max_sort_partition_bytes: 0`
+uses `max_sort_partition_memory_fraction` of available GPU memory. The YAML
+operator parameter remains an expert escape hatch for controlled sort
+benchmarks; the direct DuckDB session override is test-only.
 
 ### Dynamic Filters
 

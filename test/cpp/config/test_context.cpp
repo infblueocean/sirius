@@ -226,10 +226,14 @@ TEST_CASE("Test-only settings require explicit process opt-in",
     duckdb::Connection con(db);
     REQUIRE(setting_count(con, "sirius_test_inject_transparent_gpu_error") == 0);
     REQUIRE(setting_count(con, "sort_sample_bytes") == 0);
+    REQUIRE(setting_count(con, "max_sort_partition_bytes") == 0);
     auto result = con.Query("SET sirius_test_inject_transparent_gpu_error = 'boom'");
     REQUIRE(result != nullptr);
     REQUIRE(result->HasError());
     result = con.Query("SET sort_sample_bytes = 1048576");
+    REQUIRE(result != nullptr);
+    REQUIRE(result->HasError());
+    result = con.Query("SET max_sort_partition_bytes = 65536");
     REQUIRE(result != nullptr);
     REQUIRE(result->HasError());
   }
@@ -240,6 +244,7 @@ TEST_CASE("Test-only settings require explicit process opt-in",
     duckdb::Connection con(db);
     REQUIRE(setting_count(con, "sirius_test_inject_transparent_gpu_error") == 0);
     REQUIRE(setting_count(con, "sort_sample_bytes") == 0);
+    REQUIRE(setting_count(con, "max_sort_partition_bytes") == 0);
   }
 
   setenv("SIRIUS_ENABLE_TEST_OPTIONS", "1", 1);
@@ -248,6 +253,7 @@ TEST_CASE("Test-only settings require explicit process opt-in",
     duckdb::Connection con(db);
     REQUIRE(setting_count(con, "sirius_test_inject_transparent_gpu_error") == 1);
     REQUIRE(setting_count(con, "sort_sample_bytes") == 1);
+    REQUIRE(setting_count(con, "max_sort_partition_bytes") == 1);
     auto result = con.Query("SET sirius_test_inject_transparent_gpu_error = 'boom'");
     REQUIRE(result != nullptr);
     REQUIRE_FALSE(result->HasError());
@@ -255,6 +261,12 @@ TEST_CASE("Test-only settings require explicit process opt-in",
     REQUIRE(result != nullptr);
     REQUIRE_FALSE(result->HasError());
     result = con.Query("RESET sort_sample_bytes");
+    REQUIRE(result != nullptr);
+    REQUIRE_FALSE(result->HasError());
+    result = con.Query("SET max_sort_partition_bytes = 65536");
+    REQUIRE(result != nullptr);
+    REQUIRE_FALSE(result->HasError());
+    result = con.Query("RESET max_sort_partition_bytes");
     REQUIRE(result != nullptr);
     REQUIRE_FALSE(result->HasError());
   }

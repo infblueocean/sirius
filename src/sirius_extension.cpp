@@ -2235,6 +2235,12 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                               LogicalType::UBIGINT,
                               Value::UBIGINT(operator_defaults.sort_sample_bytes),
                               SetSortSampleBytes);
+    config.AddExtensionOption(
+      "max_sort_partition_bytes",
+      "TEST ONLY: override the automatic GPU-memory-derived sort partition size",
+      LogicalType::UBIGINT,
+      Value::UBIGINT(operator_defaults.max_sort_partition_bytes),
+      SetMaxSortPartitionBytes);
   }
 
   // Add in config options for special JIT implementation for regex
@@ -2268,13 +2274,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                             Value::UBIGINT(operator_defaults.scan_task_batch_size),
                             SetDefaultScanTaskBatchSize);
 
-  // Add in config option for sort partition size
-  config.AddExtensionOption("max_sort_partition_bytes",
-                            "Maximum bytes per sort partition (0 = auto based on "
-                            "max_sort_partition_memory_fraction of GPU memory)",
-                            LogicalType::UBIGINT,
-                            Value::UBIGINT(operator_defaults.max_sort_partition_bytes),
-                            SetMaxSortPartitionBytes);
   config.AddExtensionOption(
     "max_sort_partition_memory_fraction",
     "Fraction of available GPU memory per sort partition when max_sort_partition_bytes is 0",
