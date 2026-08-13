@@ -2246,6 +2246,22 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                               LogicalType::BOOLEAN,
                               Value::BOOLEAN(operator_defaults.enable_dynamic_zone_map_filter),
                               SetEnableDynamicZoneMapFilter);
+    config.AddExtensionOption("max_build_hash_table_bytes",
+                              "TEST ONLY: override the internally derived BUILD_PROBE threshold",
+                              LogicalType::UBIGINT,
+                              Value::UBIGINT(operator_defaults.max_build_hash_table_bytes),
+                              SetMaxBuildHashTableBytes);
+    config.AddExtensionOption(
+      "hash_partition_bytes",
+      "TEST ONLY: override the effective-capacity-derived hash partition size",
+      LogicalType::UBIGINT,
+      Value::UBIGINT(operator_defaults.hash_partition_bytes),
+      SetHashPartitionBytes);
+    config.AddExtensionOption("max_broadcast_join_size",
+                              "TEST ONLY: override the multi-GPU broadcast-join size threshold",
+                              LogicalType::UBIGINT,
+                              Value::UBIGINT(operator_defaults.max_broadcast_join_size),
+                              SetMaxBroadcastJoinSize);
   }
 
   // Add in config options for special JIT implementation for regex
@@ -2315,12 +2331,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                             Value::INTEGER(Config::LOG_FLUSH_SECONDS),
                             SetLogFlushSeconds);
 
-  config.AddExtensionOption("hash_partition_bytes",
-                            "Target size in bytes per hash partition",
-                            LogicalType::UBIGINT,
-                            Value::UBIGINT(operator_defaults.hash_partition_bytes),
-                            SetHashPartitionBytes);
-
   config.AddExtensionOption("concat_batch_bytes",
                             "Target size for concat operator",
                             LogicalType::UBIGINT,
@@ -2332,21 +2342,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                             LogicalType::UBIGINT,
                             Value::UBIGINT(operator_defaults.sort_sample_bytes),
                             SetSortSampleBytes);
-
-  config.AddExtensionOption("max_build_hash_table_bytes",
-                            "Maximum size a build-side table can be where it will create a "
-                            "reusable hash table for hash joins (i.e. BUILD_PROBE mode)",
-                            LogicalType::UBIGINT,
-                            Value::UBIGINT(operator_defaults.max_build_hash_table_bytes),
-                            SetMaxBuildHashTableBytes);
-
-  config.AddExtensionOption("max_broadcast_join_size",
-                            "Maximum build-side size in bytes for a broadcast join, where the "
-                            "(small) build table is replicated to every GPU instead of "
-                            "hash-partitioned across GPUs",
-                            LogicalType::UBIGINT,
-                            Value::UBIGINT(operator_defaults.max_broadcast_join_size),
-                            SetMaxBroadcastJoinSize);
 
   config.AddExtensionOption(
     "mark_join_build_switch_ratio",

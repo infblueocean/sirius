@@ -16,7 +16,11 @@ num_partitions = max(1, ceil(total_bytes / hash_partition_bytes))
 
 **Code path:** `src/op/sirius_physical_partition.cpp` — `determine_num_partitions()`
 
-**Config:** `hash_partition_bytes` (default: 512 MB)
+**Config:** the hash partition target uses the shared
+physical/effective-capacity-derived operator batch default. The advanced YAML
+escape hatch `sirius.operator_params.hash_partition_bytes` remains available
+for a controlled partition benchmark. The direct DuckDB session override is
+test-only.
 
 ### Drain and Restart Task Creator (PR #479)
 
