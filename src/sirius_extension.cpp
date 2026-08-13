@@ -2246,6 +2246,21 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                               LogicalType::BOOLEAN,
                               Value::BOOLEAN(operator_defaults.enable_dynamic_zone_map_filter),
                               SetEnableDynamicZoneMapFilter);
+    config.AddExtensionOption("fuse_merge_pipelines",
+                              "TEST ONLY: toggle merge pipeline fusion",
+                              LogicalType::BOOLEAN,
+                              Value::BOOLEAN(true),
+                              SetFuseMergePipelines);
+    config.AddExtensionOption("enable_runtime_distinct_build_probe",
+                              "TEST ONLY: toggle the internal runtime distinct-build probe",
+                              LogicalType::BOOLEAN,
+                              Value::BOOLEAN(operator_defaults.enable_runtime_distinct_build_probe),
+                              SetEnableRuntimeDistinctBuildProbe);
+    config.AddExtensionOption("concat_batch_bytes",
+                              "TEST ONLY: override the internally derived CONCAT batch target",
+                              LogicalType::UBIGINT,
+                              Value::UBIGINT(operator_defaults.concat_batch_bytes),
+                              SetConcatBatchBytes);
   }
 
   // Add in config options for special JIT implementation for regex
@@ -2264,12 +2279,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                             Value::BOOLEAN(Config::MODIFIED_PIPELINE),
                             SetModifiedPipeline);
 #endif
-
-  config.AddExtensionOption("fuse_merge_pipelines",
-                            "Fuse eligible GROUP BY and TOP_N merges into downstream pipelines",
-                            LogicalType::BOOLEAN,
-                            Value::BOOLEAN(true),
-                            SetFuseMergePipelines);
 
   // Add in config options for duckdb scan task
   // Default batch size
@@ -2321,12 +2330,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
                             Value::UBIGINT(operator_defaults.hash_partition_bytes),
                             SetHashPartitionBytes);
 
-  config.AddExtensionOption("concat_batch_bytes",
-                            "Target size for concat operator",
-                            LogicalType::UBIGINT,
-                            Value::UBIGINT(operator_defaults.concat_batch_bytes),
-                            SetConcatBatchBytes);
-
   config.AddExtensionOption("sort_sample_bytes",
                             "Target bytes to sample before computing sort partition boundaries",
                             LogicalType::UBIGINT,
@@ -2356,16 +2359,6 @@ void SiriusExtension::InitialGPUConfigs(DBConfig& config, const sirius::sirius_c
     LogicalType::DOUBLE,
     Value::DOUBLE(operator_defaults.mark_join_build_switch_ratio),
     SetMarkJoinBuildSwitchRatio);
-
-  config.AddExtensionOption(
-    "enable_runtime_distinct_build_probe",
-    "For BUILD_PROBE hash joins whose build-key uniqueness the planner could not prove, test "
-    "distinctness at runtime (one cudf::distinct_count pass over the cached build) and take the "
-    "single-pass cudf::distinct_hash_join instead of the general two-pass join when the keys are "
-    "distinct (on by default)",
-    LogicalType::BOOLEAN,
-    Value::BOOLEAN(operator_defaults.enable_runtime_distinct_build_probe),
-    SetEnableRuntimeDistinctBuildProbe);
 
   config.AddExtensionOption(
     "gpu_execution",
