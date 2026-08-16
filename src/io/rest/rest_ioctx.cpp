@@ -40,6 +40,16 @@ rest_perf_snapshot rest_ioctx::perf_snapshot() const noexcept
   rest_perf_snapshot agg;
   for (auto const& r : _reactors) {
     auto const s = r->perf_snapshot();
+    if (agg.effective_max_connections == 0) {
+      agg.effective_max_connections = s.effective_max_connections;
+    } else if (agg.effective_max_connections != s.effective_max_connections) {
+      agg.effective_max_connections = 0;
+    }
+    if (agg.effective_host_block_size == 0) {
+      agg.effective_host_block_size = s.effective_host_block_size;
+    } else if (agg.effective_host_block_size != s.effective_host_block_size) {
+      agg.effective_host_block_size = 0;
+    }
     agg.chunk_get_ns_total += s.chunk_get_ns_total;
     agg.chunk_get_count += s.chunk_get_count;
     agg.chunk_get_ns_max = std::max(agg.chunk_get_ns_max, s.chunk_get_ns_max);
@@ -54,6 +64,7 @@ rest_perf_snapshot rest_ioctx::perf_snapshot() const noexcept
     agg.retries_total += s.retries_total;
     agg.terminal_failures_total += s.terminal_failures_total;
     agg.device_stream_sync_total += s.device_stream_sync_total;
+    agg.slot_pool_full_count += s.slot_pool_full_count;
     agg.payload_bytes_read_total += s.payload_bytes_read_total;
     agg.blocking_host_get_count += s.blocking_host_get_count;
     agg.blocking_host_get_wall_ns_total += s.blocking_host_get_wall_ns_total;

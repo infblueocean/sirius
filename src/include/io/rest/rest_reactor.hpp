@@ -153,6 +153,8 @@ class rest_io_object : public sirius_io_object {
 /// @c perf_instrumentation is on; retry / terminal / device-stream-sync and
 /// payload-bytes counts are populated regardless.
 struct rest_perf_snapshot {
+  std::size_t effective_max_connections{0};
+  std::size_t effective_host_block_size{0};
   std::uint64_t chunk_get_ns_total{0};
   std::uint64_t chunk_get_count{0};
   std::uint64_t chunk_get_ns_max{0};
@@ -165,6 +167,10 @@ struct rest_perf_snapshot {
   std::uint64_t retries_total{0};
   std::uint64_t terminal_failures_total{0};
   std::uint64_t device_stream_sync_total{0};
+  // Always-on count of submission attempts that found every per-reactor
+  // connection slot occupied.  This is a mechanism receipt: a max-connections
+  // screen is not exercising its candidate unless the slot pool fills.
+  std::uint64_t slot_pool_full_count{0};
   // Always-on: HTTP response *body* bytes received (sink.total_received), summed
   // over every completed curl attempt incl. retries / partial / failed bodies.
   // Not TLS/header/TCP-frame bytes — this is the S3-scan payload byte budget.
@@ -382,6 +388,7 @@ class rest_reactor {
     std::atomic<std::uint64_t> retries_total{0};
     std::atomic<std::uint64_t> terminal_failures_total{0};
     std::atomic<std::uint64_t> device_stream_sync_total{0};
+    std::atomic<std::uint64_t> slot_pool_full_count{0};
     std::atomic<std::uint64_t> payload_bytes_read_total{0};
     std::atomic<std::uint64_t> blocking_host_get_count{0};
     std::atomic<std::uint64_t> blocking_host_get_wall_ns_total{0};

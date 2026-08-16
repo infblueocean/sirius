@@ -829,20 +829,23 @@ size_t rest_reactor::host_read(const io_object_type& file, size_t offset, size_t
 rest_perf_snapshot rest_reactor::perf_snapshot() const noexcept
 {
   rest_perf_snapshot s;
-  s.chunk_get_ns_total       = _perf.chunk_get_ns_total.load(std::memory_order_relaxed);
-  s.chunk_get_count          = _perf.chunk_get_count.load(std::memory_order_relaxed);
-  s.chunk_get_ns_max         = _perf.chunk_get_ns_max.load(std::memory_order_relaxed);
-  s.queue_wait_ns_total      = _perf.queue_wait_ns_total.load(std::memory_order_relaxed);
-  s.queue_wait_count         = _perf.queue_wait_count.load(std::memory_order_relaxed);
-  s.ttfb_ns                  = _perf.ttfb_ns.load(std::memory_order_relaxed);
-  s.h2d_observed_ns_total    = _perf.h2d_observed_ns_total.load(std::memory_order_relaxed);
-  s.h2d_observed_count       = _perf.h2d_observed_count.load(std::memory_order_relaxed);
-  s.h2d_observed_ns_max      = _perf.h2d_observed_ns_max.load(std::memory_order_relaxed);
-  s.retries_total            = _perf.retries_total.load(std::memory_order_relaxed);
-  s.terminal_failures_total  = _perf.terminal_failures_total.load(std::memory_order_relaxed);
-  s.device_stream_sync_total = _perf.device_stream_sync_total.load(std::memory_order_relaxed);
-  s.payload_bytes_read_total = _perf.payload_bytes_read_total.load(std::memory_order_relaxed);
-  s.blocking_host_get_count  = _perf.blocking_host_get_count.load(std::memory_order_relaxed);
+  s.effective_max_connections = _config.max_connections;
+  s.effective_host_block_size = _bounce_slot_size;
+  s.chunk_get_ns_total        = _perf.chunk_get_ns_total.load(std::memory_order_relaxed);
+  s.chunk_get_count           = _perf.chunk_get_count.load(std::memory_order_relaxed);
+  s.chunk_get_ns_max          = _perf.chunk_get_ns_max.load(std::memory_order_relaxed);
+  s.queue_wait_ns_total       = _perf.queue_wait_ns_total.load(std::memory_order_relaxed);
+  s.queue_wait_count          = _perf.queue_wait_count.load(std::memory_order_relaxed);
+  s.ttfb_ns                   = _perf.ttfb_ns.load(std::memory_order_relaxed);
+  s.h2d_observed_ns_total     = _perf.h2d_observed_ns_total.load(std::memory_order_relaxed);
+  s.h2d_observed_count        = _perf.h2d_observed_count.load(std::memory_order_relaxed);
+  s.h2d_observed_ns_max       = _perf.h2d_observed_ns_max.load(std::memory_order_relaxed);
+  s.retries_total             = _perf.retries_total.load(std::memory_order_relaxed);
+  s.terminal_failures_total   = _perf.terminal_failures_total.load(std::memory_order_relaxed);
+  s.device_stream_sync_total  = _perf.device_stream_sync_total.load(std::memory_order_relaxed);
+  s.slot_pool_full_count      = _perf.slot_pool_full_count.load(std::memory_order_relaxed);
+  s.payload_bytes_read_total  = _perf.payload_bytes_read_total.load(std::memory_order_relaxed);
+  s.blocking_host_get_count   = _perf.blocking_host_get_count.load(std::memory_order_relaxed);
   s.blocking_host_get_wall_ns_total =
     _perf.blocking_host_get_wall_ns_total.load(std::memory_order_relaxed);
   s.blocking_host_get_wall_ns_max =
@@ -1478,7 +1481,10 @@ void rest_reactor::worker_loop(const std::stop_token& stop_token)
       // released by its RAII destructor at continue/break.
       while (true) {
         slot_pool::token tok = pool.try_acquire_token();
-        if (!tok) { break; }
+        if (!tok) {
+          _perf.slot_pool_full_count.fetch_add(1, std::memory_order_relaxed);
+          break;
+        }
 
         // Submission priority: due retries (ready) ahead of fresh inbound work
         // so a backed-off request is not starved by new ones.
