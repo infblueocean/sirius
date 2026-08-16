@@ -17,9 +17,14 @@
 #include "utils/tpch_queries.hpp"
 #include "utils/transparent_execution_test_utils.hpp"
 
+#include <cudf/copying.hpp>
+#include <cudf/hashing.hpp>
 #include <cudf/io/experimental/hybrid_scan.hpp>
 #include <cudf/io/parquet.hpp>
 #include <cudf/io/parquet_io_utils.hpp>
+#include <cudf/reduction.hpp>
+#include <cudf/scalar/scalar.hpp>
+#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/span.hpp>
 
 #include <duckdb.hpp>
@@ -878,6 +883,48 @@ std::uint64_t sat_sub(std::uint64_t after, std::uint64_t before)
   return after >= before ? after - before : 0;
 }
 
+std::uint64_t row_hash_xor(cudf::table_view table)
+{
+  REQUIRE(table.num_rows() > 0);
+  auto const stream = cudf::get_default_stream();
+  auto mr           = cudf::get_current_device_resource_ref();
+  auto hashes       = cudf::hashing::xxhash_64(table, 0, stream, mr);
+  auto aggregate = cudf::make_bitwise_aggregation<cudf::reduce_aggregation>(cudf::bitwise_op::XOR);
+  auto reduced =
+    cudf::reduce(hashes->view(), *aggregate, cudf::data_type{cudf::type_id::UINT64}, stream, mr);
+  auto const& scalar = static_cast<cudf::numeric_scalar<std::uint64_t> const&>(*reduced);
+  REQUIRE(scalar.is_valid(stream));
+  return scalar.value(stream);
+}
+
+std::vector<std::uint64_t> source_copy_row_hash_xors(cudf::table_view table,
+                                                     std::size_t source_copies)
+{
+  REQUIRE(source_copies > 0);
+  REQUIRE(table.num_rows() > 0);
+  REQUIRE(static_cast<std::size_t>(table.num_rows()) % source_copies == 0);
+  auto const rows_per_copy =
+    static_cast<cudf::size_type>(static_cast<std::size_t>(table.num_rows()) / source_copies);
+  auto const stream = cudf::get_default_stream();
+  auto mr           = cudf::get_current_device_resource_ref();
+  auto hashes       = cudf::hashing::xxhash_64(table, 0, stream, mr);
+  auto aggregate = cudf::make_bitwise_aggregation<cudf::reduce_aggregation>(cudf::bitwise_op::XOR);
+  std::vector<std::uint64_t> digests;
+  digests.reserve(source_copies);
+  for (std::size_t copy = 0; copy < source_copies; ++copy) {
+    auto const begin = static_cast<cudf::size_type>(copy) * rows_per_copy;
+    auto const end   = begin + rows_per_copy;
+    auto slice       = cudf::slice(hashes->view(), {begin, end}, stream);
+    REQUIRE(slice.size() == 1);
+    auto reduced =
+      cudf::reduce(slice.front(), *aggregate, cudf::data_type{cudf::type_id::UINT64}, stream, mr);
+    auto const& scalar = static_cast<cudf::numeric_scalar<std::uint64_t> const&>(*reduced);
+    REQUIRE(scalar.is_valid(stream));
+    digests.push_back(scalar.value(stream));
+  }
+  return digests;
+}
+
 sirius::io::rest::rest_perf_snapshot delta_snapshot(
   sirius::io::rest::rest_perf_snapshot const& after,
   sirius::io::rest::rest_perf_snapshot const& before)
@@ -925,6 +972,7 @@ struct rest_bench_measurement {
   std::size_t effective_host_block_size{0};
   std::vector<std::uint64_t> reactor_scan_chunk_get_counts;
   std::vector<std::uint64_t> reactor_scan_slot_pool_full_counts;
+  std::vector<std::uint64_t> source_copy_content_digests;
 };
 
 std::unique_ptr<cudf::io::datasource::buffer> read_parquet_footer_for_bench(
@@ -957,8 +1005,9 @@ sirius::io::rest::rest_ioctx& ensure_rest_ioctx_for_bench(
 rest_bench_measurement run_rest_parquet_scan(s3_sql_fixture& fixture,
                                              std::string const& uri,
                                              std::vector<std::string> const& columns,
-                                             bool use_footer_probe     = false,
-                                             std::size_t source_copies = 1)
+                                             bool use_footer_probe        = false,
+                                             std::size_t source_copies    = 1,
+                                             bool capture_content_digests = false)
 {
   REQUIRE(source_copies > 0);
   auto& manager = require_sirius_context(fixture).get_scan_manager();
@@ -1010,8 +1059,12 @@ rest_bench_measurement run_rest_parquet_scan(s3_sql_fixture& fixture,
   auto const scan_start  = bench_clock::now();
   auto [table, metadata] = cudf::io::read_parquet(std::move(sources), std::move(metadatas), opts);
   (void)metadata;
-  auto const scan_stop      = bench_clock::now();
-  auto const wall_stop      = bench_clock::now();
+  auto const scan_stop = bench_clock::now();
+  auto const wall_stop = bench_clock::now();
+  std::vector<std::uint64_t> source_copy_content_digests;
+  if (capture_content_digests) {
+    source_copy_content_digests = source_copy_row_hash_xors(table->view(), source_copies);
+  }
   auto const after          = rest.perf_snapshot();
   auto const reactors_after = rest.reactor_perf_snapshots();
   auto const bind_micro     = delta_snapshot(after_footer, before);
@@ -1049,7 +1102,8 @@ rest_bench_measurement run_rest_parquet_scan(s3_sql_fixture& fixture,
                                 reactors_after.size(),
                                 effective_host_block_size,
                                 std::move(reactor_scan_chunk_get_counts),
-                                std::move(reactor_scan_slot_pool_full_counts)};
+                                std::move(reactor_scan_slot_pool_full_counts),
+                                std::move(source_copy_content_digests)};
 }
 
 struct metric_delta {
@@ -1097,6 +1151,8 @@ struct bench_record {
   std::uint64_t device_stream_sync_total{0};
   std::vector<std::uint64_t> reactor_scan_chunk_get_counts;
   std::vector<std::uint64_t> reactor_scan_slot_pool_full_counts;
+  std::uint64_t oracle_content_digest{0};
+  std::vector<std::uint64_t> source_copy_content_digests;
   std::vector<metric_delta> comparisons;
 };
 
@@ -1160,6 +1216,8 @@ bench_record make_record(std::string scenario,
                       micro.device_stream_sync_total,
                       std::move(measurement.reactor_scan_chunk_get_counts),
                       std::move(measurement.reactor_scan_slot_pool_full_counts),
+                      0,
+                      std::move(measurement.source_copy_content_digests),
                       {}};
 }
 
@@ -1474,6 +1532,13 @@ void write_perf_json(fs::path const& path,
       out << r.reactor_scan_slot_pool_full_counts[reactor];
     }
     out << "]";
+    out << ", \"oracle_content_digest\": " << r.oracle_content_digest;
+    out << ", \"source_copy_content_digests\": [";
+    for (std::size_t copy = 0; copy < r.source_copy_content_digests.size(); ++copy) {
+      if (copy != 0) { out << ", "; }
+      out << r.source_copy_content_digests[copy];
+    }
+    out << "]";
     if (!r.comparisons.empty()) {
       out << ", \"comparison\": {";
       for (std::size_t c = 0; c < r.comparisons.size(); ++c) {
@@ -1605,6 +1670,8 @@ void require_perf_json_schema(fs::path const& path, std::vector<std::string> exp
                    "\"terminal_failures_total\"",
                    "\"reactor_scan_chunk_get_counts\"",
                    "\"reactor_scan_slot_pool_full_counts\"",
+                   "\"oracle_content_digest\"",
+                   "\"source_copy_content_digests\"",
                    "\"config\""}) {
     CHECK(json.find(key) != std::string::npos);
   }
@@ -1767,13 +1834,15 @@ bench_record run_rest_aws_bench_scenario_on_fixture(s3_sql_fixture& fixture,
                                                     std::optional<duckdb::idx_t> expected_rows,
                                                     bool use_footer_probe,
                                                     std::size_t rest_n_reactors,
-                                                    std::size_t source_copies)
+                                                    std::size_t source_copies,
+                                                    bool capture_content_digests = false)
 {
   INFO("scenario=" << scenario << " key=" << aws_bench_lineitem_key()
                    << " columns=" << columns.size() << " max_connections=" << rest_max_connections
                    << " rest_n_reactors=" << rest_n_reactors << " source_copies=" << source_copies
                    << " use_footer_probe=" << use_footer_probe);
-  auto measurement = run_rest_parquet_scan(fixture, uri, columns, use_footer_probe, source_copies);
+  auto measurement = run_rest_parquet_scan(
+    fixture, uri, columns, use_footer_probe, source_copies, capture_content_digests);
   CHECK(measurement.rows > 0);
   if (expected_rows.has_value()) { CHECK(measurement.rows == *expected_rows); }
   CHECK(measurement.payload_bytes_read > 0);
@@ -2497,6 +2566,16 @@ TEST_CASE("S3 REST AWS max-connections screen records one bound cell",
   auto const source_copies = rest_reactor_screen_env("SIRIUS_BENCH_REST_SOURCE_COPIES", {1, 8});
   REQUIRE(source_copies.has_value());
 
+  auto const local_oracle_path = local_parquet_path(*env, "lineitem");
+  REQUIRE(fs::is_regular_file(local_oracle_path));
+  auto local_options =
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{local_oracle_path.string()})
+      .build();
+  auto local_oracle        = cudf::io::read_parquet(local_options);
+  auto const oracle_rows   = local_oracle.tbl->num_rows();
+  auto const oracle_digest = row_hash_xor(local_oracle.tbl->view());
+  REQUIRE(oracle_rows > 0);
+
   auto const object_key                 = aws_bench_lineitem_key();
   auto const uri                        = aws_bench_lineitem_uri(*env);
   constexpr std::size_t rest_n_reactors = 2;
@@ -2508,15 +2587,18 @@ TEST_CASE("S3 REST AWS max-connections screen records one bound cell",
                          std::nullopt,
                          /*tls_verify=*/true);
   auto run_screen_scan = [&](std::string scenario) {
-    return run_rest_aws_bench_scenario_on_fixture(fixture,
-                                                  uri,
-                                                  std::move(scenario),
-                                                  bench_full_lineitem_projection(),
-                                                  *rest_max_connections,
-                                                  std::nullopt,
-                                                  /*use_footer_probe=*/false,
-                                                  rest_n_reactors,
-                                                  *source_copies);
+    auto record                  = run_rest_aws_bench_scenario_on_fixture(fixture,
+                                                         uri,
+                                                         std::move(scenario),
+                                                         bench_full_lineitem_projection(),
+                                                         *rest_max_connections,
+                                                         std::nullopt,
+                                                         /*use_footer_probe=*/false,
+                                                         rest_n_reactors,
+                                                         *source_copies,
+                                                         /*capture_content_digests=*/true);
+    record.oracle_content_digest = oracle_digest;
+    return record;
   };
   auto require_bound_scan = [&](bench_record const& record,
                                 std::optional<duckdb::idx_t> expected_rows,
@@ -2530,7 +2612,13 @@ TEST_CASE("S3 REST AWS max-connections screen records one bound cell",
     REQUIRE(record.reactor_scan_chunk_get_counts.size() == rest_n_reactors);
     REQUIRE(record.reactor_scan_slot_pool_full_counts.size() == rest_n_reactors);
     REQUIRE(record.row_count > 0);
+    REQUIRE(record.row_count == static_cast<duckdb::idx_t>(oracle_rows) * *source_copies);
     REQUIRE(record.payload_bytes_read > 0);
+    REQUIRE(record.oracle_content_digest == oracle_digest);
+    REQUIRE(record.source_copy_content_digests.size() == *source_copies);
+    for (auto digest : record.source_copy_content_digests) {
+      REQUIRE(digest == oracle_digest);
+    }
     if (expected_rows.has_value()) { REQUIRE(record.row_count == *expected_rows); }
     if (expected_payload.has_value()) { REQUIRE(record.payload_bytes_read == *expected_payload); }
     REQUIRE(record.retries_total == 0);

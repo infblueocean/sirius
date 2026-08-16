@@ -1490,8 +1490,8 @@ void rest_reactor::worker_loop(const std::stop_token& stop_token)
         slot_pool::token tok = pool.try_acquire_token();
         if (!tok) {
           // A full pool only proves the configured limit was binding when work
-          // is also waiting.  submit() runs after every event, including times
-          // when all slots are occupied but the inbound/retry queues are empty.
+          // is also waiting or being published. submit() runs after every event,
+          // including times when all slots are occupied but demand is empty.
           if (!ready.empty() || _queued_request_count.load(std::memory_order_acquire) > 0) {
             _perf.slot_pool_full_count.fetch_add(1, std::memory_order_relaxed);
           }

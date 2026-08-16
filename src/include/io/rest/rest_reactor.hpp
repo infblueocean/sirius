@@ -168,8 +168,9 @@ struct rest_perf_snapshot {
   std::uint64_t terminal_failures_total{0};
   std::uint64_t device_stream_sync_total{0};
   // Always-on count of submission attempts that found every per-reactor
-  // connection slot occupied.  This is a mechanism receipt: a max-connections
-  // screen is not exercising its candidate unless the slot pool fills.
+  // connection slot occupied while another request was waiting or being
+  // published.  This is a mechanism receipt: a max-connections screen is not
+  // exercising its candidate unless the slot pool fills under excess demand.
   std::uint64_t slot_pool_full_count{0};
   // Always-on: HTTP response *body* bytes received (sink.total_received), summed
   // over every completed curl attempt incl. retries / partial / failed bodies.
@@ -370,10 +371,11 @@ class rest_reactor {
 
   std::stop_source _stop_source;
   duckdb_moodycamel::BlockingConcurrentQueue<std::unique_ptr<rest_chunked_rx_request>> _requests;
-  // Exact count of non-null requests still waiting in _requests.  The worker is
-  // the only consumer; producers increment after a successful bulk enqueue and
-  // the worker decrements after dequeue.  This lets the screen distinguish a
-  // full pool with queued work from a merely full pool observed after an event.
+  // Count of non-null requests waiting or being published to _requests.
+  // Producers publish the count before the concurrent-queue operation and roll
+  // it back if that operation fails; the worker decrements after dequeue.  A
+  // successful screen can therefore distinguish full slots plus pending demand
+  // from a merely full pool observed after an unrelated event.
   std::atomic<std::uint64_t> _queued_request_count{0};
 
   // Instrumentation counters, owned by the reactor (not worker_loop locals) so
