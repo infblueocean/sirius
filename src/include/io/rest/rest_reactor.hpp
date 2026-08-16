@@ -370,6 +370,11 @@ class rest_reactor {
 
   std::stop_source _stop_source;
   duckdb_moodycamel::BlockingConcurrentQueue<std::unique_ptr<rest_chunked_rx_request>> _requests;
+  // Exact count of non-null requests still waiting in _requests.  The worker is
+  // the only consumer; producers increment after a successful bulk enqueue and
+  // the worker decrements after dequeue.  This lets the screen distinguish a
+  // full pool with queued work from a merely full pool observed after an event.
+  std::atomic<std::uint64_t> _queued_request_count{0};
 
   // Instrumentation counters, owned by the reactor (not worker_loop locals) so
   // rest_ioctx can read them cross-thread.  Micro timings are stamped only under

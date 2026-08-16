@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -534,14 +535,20 @@ void rest_reactor::enqueue(request_type_ptr req)
 void rest_reactor::enqueue_chunks(std::span<std::unique_ptr<rest_chunked_rx_request>> batch)
 {
   if (batch.empty()) { return; }
+  auto const queued_non_null = static_cast<std::uint64_t>(std::count_if(
+    batch.begin(), batch.end(), [](auto const& request) { return request != nullptr; }));
   if (_config.perf_instrumentation) {
     auto const now = std::chrono::steady_clock::now();
     for (auto& c : batch) {
       if (c) { c->t_enqueue = now; }
     }
   }
+  _queued_request_count.fetch_add(queued_non_null, std::memory_order_release);
   bool const ok = _requests.enqueue_bulk(std::make_move_iterator(batch.data()), batch.size());
-  if (!ok) { throw std::runtime_error("rest_reactor::enqueue_chunks: enqueue_bulk failed"); }
+  if (!ok) {
+    _queued_request_count.fetch_sub(queued_non_null, std::memory_order_acq_rel);
+    throw std::runtime_error("rest_reactor::enqueue_chunks: enqueue_bulk failed");
+  }
   interrupt();
 }
 
@@ -1482,7 +1489,12 @@ void rest_reactor::worker_loop(const std::stop_token& stop_token)
       while (true) {
         slot_pool::token tok = pool.try_acquire_token();
         if (!tok) {
-          _perf.slot_pool_full_count.fetch_add(1, std::memory_order_relaxed);
+          // A full pool only proves the configured limit was binding when work
+          // is also waiting.  submit() runs after every event, including times
+          // when all slots are occupied but the inbound/retry queues are empty.
+          if (!ready.empty() || _queued_request_count.load(std::memory_order_acquire) > 0) {
+            _perf.slot_pool_full_count.fetch_add(1, std::memory_order_relaxed);
+          }
           break;
         }
 
@@ -1492,8 +1504,12 @@ void rest_reactor::worker_loop(const std::stop_token& stop_token)
         if (!ready.empty()) {
           dr = std::move(ready.front());
           ready.pop_front();
-        } else if (!_requests.try_dequeue(dr)) {
-          break;
+        } else {
+          if (!_requests.try_dequeue(dr)) { break; }
+          if (dr) {
+            auto const previous = _queued_request_count.fetch_sub(1, std::memory_order_acq_rel);
+            assert(previous > 0);
+          }
         }
         if (!dr) { continue; }
         if (dr->manager->has_error()) {
