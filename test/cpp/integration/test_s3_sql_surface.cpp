@@ -2568,12 +2568,13 @@ TEST_CASE("S3 REST AWS max-connections screen records one bound cell",
 
   auto const local_oracle_path = local_parquet_path(*env, "lineitem");
   REQUIRE(fs::is_regular_file(local_oracle_path));
-  auto local_options =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{local_oracle_path.string()})
-      .build();
-  auto local_oracle        = cudf::io::read_parquet(local_options);
-  auto const oracle_rows   = local_oracle.tbl->num_rows();
-  auto const oracle_digest = row_hash_xor(local_oracle.tbl->view());
+  auto const [oracle_rows, oracle_digest] = [&] {
+    auto local_options =
+      cudf::io::parquet_reader_options::builder(cudf::io::source_info{local_oracle_path.string()})
+        .build();
+    auto local_oracle = cudf::io::read_parquet(local_options);
+    return std::pair{local_oracle.tbl->num_rows(), row_hash_xor(local_oracle.tbl->view())};
+  }();
   REQUIRE(oracle_rows > 0);
 
   auto const object_key                 = aws_bench_lineitem_key();
